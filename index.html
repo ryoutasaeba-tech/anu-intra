@@ -416,7 +416,10 @@
     <!-- Toast -->
     <div class="toast" id="toast"></div>
 
+    <script src="links-lib.js"></script>
     <script>
+        const { escapeHtml, safeUrl, parseLinks } = AnuLinks;
+
         // Default links
         const defaultLinks = [
             {
@@ -427,11 +430,25 @@
             }
         ];
 
-        let links = JSON.parse(localStorage.getItem('anu-links')) || defaultLinks;
+        function loadLinks() {
+            try {
+                return parseLinks(localStorage.getItem('anu-links'), defaultLinks);
+            } catch (e) {
+                return defaultLinks; // 保存場所が使えない時も、画面は動かす
+            }
+        }
+
+        let links = loadLinks();
         let editingId = null;
 
+        // 成功したら true。失敗（容量いっぱい・保存禁止など）は false を返し、呼び出し側が知らせる
         function saveToStorage() {
-            localStorage.setItem('anu-links', JSON.stringify(links));
+            try {
+                localStorage.setItem('anu-links', JSON.stringify(links));
+                return true;
+            } catch (e) {
+                return false;
+            }
         }
 
         function showToast(message) {
@@ -469,10 +486,12 @@
                 return;
             }
 
-            grid.innerHTML = links.map(link => `
+            grid.innerHTML = links.map(link => {
+                const href = safeUrl(link.url);
+                return `
                 <div class="link-card">
                     <div class="link-header">
-                        <div class="link-icon">${link.icon || getIcon(link.url)}</div>
+                        <div class="link-icon">${escapeHtml(link.icon || getIcon(link.url))}</div>
                         <div class="link-actions">
                             <button class="action-btn" onclick="editLink(${link.id})" title="Edit">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -488,9 +507,9 @@
                             </button>
                         </div>
                     </div>
-                    <div class="link-name">${link.name}</div>
-                    <div class="link-url">${link.url.length > 50 ? link.url.substring(0, 50) + '...' : link.url}</div>
-                    <a href="${link.url}" target="_blank" class="open-btn">
+                    <div class="link-name">${escapeHtml(link.name)}</div>
+                    <div class="link-url">${escapeHtml(link.url.length > 50 ? link.url.substring(0, 50) + '...' : link.url)}</div>
+                    <a href="${href ? escapeHtml(href) : '#'}" target="_blank" rel="noopener noreferrer" class="open-btn">
                         Open
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
@@ -499,7 +518,8 @@
                         </svg>
                     </a>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         }
 
         function openModal(id = null) {
@@ -538,23 +558,29 @@
                 return;
             }
 
-            if (editingId) {
-                const link = links.find(l => l.id === editingId);
-                link.name = name;
-                link.url = url;
-                link.icon = getIcon(url);
-                showToast('Link updated!');
-            } else {
-                links.push({
-                    id: Date.now(),
-                    name,
-                    url,
-                    icon: getIcon(url)
-                });
-                showToast('Link added!');
+            const okUrl = safeUrl(url);
+            if (!okUrl) {
+                alert('URL must start with http:// or https://');
+                return;
             }
 
-            saveToStorage();
+            const before = links;
+            if (editingId) {
+                links = links.map(l => l.id === editingId
+                    ? { ...l, name, url: okUrl, icon: getIcon(okUrl) }
+                    : l);
+            } else {
+                let id = Date.now();
+                while (links.some(l => l.id === id)) id++; // 同じ番号を作らない
+                links = [...links, { id, name, url: okUrl, icon: getIcon(okUrl) }];
+            }
+
+            if (saveToStorage()) {
+                showToast(editingId ? 'Link updated!' : 'Link added!');
+            } else {
+                links = before; // 保存できなかったら、できたふりをしない
+                showToast('Could not save (browser storage is full or blocked)');
+            }
             renderLinks();
             closeModal();
         }
@@ -565,10 +591,15 @@
 
         function deleteLink(id) {
             if (confirm('Delete this link?')) {
+                const before = links;
                 links = links.filter(l => l.id !== id);
-                saveToStorage();
+                if (saveToStorage()) {
+                    showToast('Link deleted');
+                } else {
+                    links = before;
+                    showToast('Could not save (browser storage is full or blocked)');
+                }
                 renderLinks();
-                showToast('Link deleted');
             }
         }
 
@@ -582,7 +613,8 @@
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeModal();
-            if (e.key === 'Enter' && document.getElementById('modalOverlay').classList.contains('active')) {
+            // 入力欄で Enter を押した時だけ保存（Cancel/Save ボタン上の Enter で二重に動かない）
+            if (e.key === 'Enter' && e.target.tagName === 'INPUT' && document.getElementById('modalOverlay').classList.contains('active')) {
                 saveLink();
             }
         });
